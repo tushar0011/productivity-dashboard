@@ -1,0 +1,23 @@
+{
+  "daily_time": {
+    "2025-07-09": 0.0
+  },
+  "sessions": [],
+  "goals": {
+    "daily": 18000,
+    "weekly": 144000
+  },
+  "categories": [
+    "Work",
+    "Study",
+    "Personal",
+    "Exercise"
+  ],
+  "settings": {
+    "theme": "dark",
+    "pomodoro": {
+      "work": 25,
+      "break": 5
+    }
+  }
+}
