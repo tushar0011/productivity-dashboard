@@ -7,12 +7,16 @@ import pandas as pd
 from collections import defaultdict
 import plotly.express as px
 import plotly.graph_objects as go
+import pytz
 
 # File for saving productive time
 DATA_FILE = "productive_time.json"
 
 # Set page layout
 st.set_page_config(page_title="⏳ Enhanced Time Tracker", layout="wide")
+
+# India timezone
+INDIA_TZ = pytz.timezone('Asia/Kolkata')
 
 
 # -----------------------
@@ -37,8 +41,13 @@ def save_data(data):
         json.dump(data, f, indent=2)
 
 
+def get_india_now():
+    """Get current time in India timezone"""
+    return datetime.now(INDIA_TZ)
+
+
 data = load_data()
-today_str = datetime.now().strftime("%Y-%m-%d")
+today_str = get_india_now().strftime("%Y-%m-%d")
 if today_str not in data["daily_time"]:
     data["daily_time"][today_str] = 0.0
 
@@ -103,6 +112,12 @@ st.markdown(f"""
         font-weight: bold;
         margin: 10px 0;
     }}
+    .timezone-info {{
+        text-align: center;
+        font-size: 14px;
+        color: {accent_color};
+        margin-bottom: 20px;
+    }}
     </style>
 """, unsafe_allow_html=True)
 
@@ -111,21 +126,25 @@ st.markdown(f"""
 # Helper Functions
 # -----------------------
 def get_remaining_today():
-    now = datetime.now()
-    end = now.replace(hour=23, minute=59, second=59)
+    """Get remaining time in current day (India timezone)"""
+    now = get_india_now()
+    end = now.replace(hour=23, minute=59, second=59, microsecond=999999)
     seconds = int((end - now).total_seconds())
-    return seconds
+    return max(0, seconds)
 
 
 def get_remaining_month():
-    now = datetime.now()
+    """Get remaining time in current month (India timezone)"""
+    now = get_india_now()
     if now.month == 12:
-        next_month = datetime(now.year + 1, 1, 1)
+        next_month = now.replace(year=now.year + 1, month=1, day=1, hour=0, minute=0, second=0, microsecond=0)
     else:
-        next_month = datetime(now.year, now.month + 1, 1)
-    end = next_month.replace(hour=0, minute=0, second=0) - timedelta(seconds=1)
+        next_month = now.replace(month=now.month + 1, day=1, hour=0, minute=0, second=0, microsecond=0)
+
+    # Last second of current month
+    end = next_month - timedelta(microseconds=1)
     seconds = int((end - now).total_seconds())
-    return seconds
+    return max(0, seconds)
 
 
 def format_time(seconds):
@@ -141,7 +160,7 @@ def get_streak():
         return 0
 
     streak = 0
-    current_date = datetime.now().date()
+    current_date = get_india_now().date()
 
     for i in range(len(dates)):
         date_obj = datetime.strptime(dates[-(i + 1)], "%Y-%m-%d").date()
@@ -156,7 +175,8 @@ def get_streak():
 
 
 def get_weekly_time():
-    now = datetime.now()
+    """Get total time for current week (Monday to Sunday, India timezone)"""
+    now = get_india_now()
     week_start = now - timedelta(days=now.weekday())
     week_time = 0
 
@@ -241,6 +261,11 @@ with st.sidebar:
 # -----------------------
 # Main Content
 # -----------------------
+# Show current India time
+india_time = get_india_now()
+st.markdown(f"<div class='timezone-info'>🇮🇳 India Time: {india_time.strftime('%Y-%m-%d %I:%M:%S %p IST')}</div>",
+            unsafe_allow_html=True)
+
 # Header with streak
 col1, col2, col3 = st.columns(3)
 
@@ -325,10 +350,10 @@ with colB:
     if colY.button("⏹ Stop"):
         st.session_state.timer_running = False
         if st.session_state.live_elapsed > 0:
-            # Save session
+            # Save session with India timezone
             session = {
                 "date": today_str,
-                "start_time": datetime.now().isoformat(),
+                "start_time": get_india_now().isoformat(),
                 "duration": st.session_state.live_elapsed,
                 "category": st.session_state.current_category,
                 "note": st.session_state.session_note,
@@ -357,7 +382,19 @@ with tabs[0]:
         st.subheader("Recent Sessions")
         recent_sessions = data["sessions"][-10:]  # Last 10 sessions
         for session in reversed(recent_sessions):
-            with st.expander(f"{session['category']} - {format_time(session['duration'])} ({session['date']})"):
+            # Parse and format time in India timezone
+            try:
+                session_time = datetime.fromisoformat(session['start_time'].replace('Z', '+00:00'))
+                if session_time.tzinfo is None:
+                    session_time = INDIA_TZ.localize(session_time)
+                else:
+                    session_time = session_time.astimezone(INDIA_TZ)
+                formatted_time = session_time.strftime('%I:%M %p IST')
+            except:
+                formatted_time = "Unknown time"
+
+            with st.expander(
+                    f"{session['category']} - {format_time(session['duration'])} ({session['date']} at {formatted_time})"):
                 st.write(f"**Duration:** {format_time(session['duration'])}")
                 st.write(f"**Category:** {session['category']}")
                 st.write(f"**Note:** {session['note'] or 'No note'}")
@@ -390,7 +427,7 @@ with tabs[1]:
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=dates, y=times, mode='lines+markers', name='Daily Time'))
         fig.add_hline(y=data["goals"]["daily"] / 3600, line_dash="dash", line_color="red", annotation_text="Daily Goal")
-        fig.update_layout(title="Daily Time Tracking", xaxis_title="Date", yaxis_title="Hours")
+        fig.update_layout(title="Daily Time Tracking (India Timezone)", xaxis_title="Date", yaxis_title="Hours")
         st.plotly_chart(fig, use_container_width=True)
 
         # Export data
@@ -400,7 +437,7 @@ with tabs[1]:
             st.download_button(
                 label="Download CSV",
                 data=csv,
-                file_name=f"time_tracker_data_{datetime.now().strftime('%Y%m%d')}.csv",
+                file_name=f"time_tracker_data_{get_india_now().strftime('%Y%m%d')}.csv",
                 mime="text/csv"
             )
     else:
@@ -427,6 +464,7 @@ with tabs[2]:
 # Keyboard shortcuts info
 st.markdown("---")
 st.markdown("**Keyboard Shortcuts:** Press Space to Start/Stop timer")
+st.markdown("**Timezone:** All times are in India Standard Time (IST)")
 
 # Auto-refresh
 if st.session_state.timer_running:
