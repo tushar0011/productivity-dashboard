@@ -3,12 +3,17 @@ from datetime import datetime, timedelta
 import time
 import json
 import os
+import pandas as pd
+from collections import defaultdict
+import plotly.express as px
+import plotly.graph_objects as go
 
 # File for saving productive time
 DATA_FILE = "productive_time.json"
 
 # Set page layout
-st.set_page_config(page_title="⏳ Time Tracker", layout="wide")
+st.set_page_config(page_title="⏳ Enhanced Time Tracker", layout="wide")
+
 
 # -----------------------
 # Load or Init Data
@@ -18,68 +23,99 @@ def load_data():
         with open(DATA_FILE, "r") as f:
             return json.load(f)
     else:
-        return {}
+        return {
+            "daily_time": {},
+            "sessions": [],
+            "goals": {"daily": 8 * 3600, "weekly": 40 * 3600},  # in seconds
+            "categories": ["Work", "Study", "Personal", "Exercise"],
+            "settings": {"theme": "dark", "pomodoro": {"work": 25, "break": 5}}
+        }
+
 
 def save_data(data):
     with open(DATA_FILE, "w") as f:
-        json.dump(data, f)
+        json.dump(data, f, indent=2)
+
 
 data = load_data()
 today_str = datetime.now().strftime("%Y-%m-%d")
-if today_str not in data:
-    data[today_str] = 0.0
+if today_str not in data["daily_time"]:
+    data["daily_time"][today_str] = 0.0
 
 # -----------------------
 # CSS Styling
 # -----------------------
-st.markdown("""
+theme = data["settings"]["theme"]
+if theme == "dark":
+    bg_color = "#0F0F0F"
+    text_color = "#F5DEB3"
+    accent_color = "#FFD700"
+    button_color = "#FFD700"
+else:
+    bg_color = "#FFFFFF"
+    text_color = "#333333"
+    accent_color = "#2E86AB"
+    button_color = "#2E86AB"
+
+st.markdown(f"""
     <style>
-    html, body, [class*="css"] {
-        background-color: #0F0F0F;
-        color: #F5DEB3;
+    html, body, [class*="css"] {{
+        background-color: {bg_color};
+        color: {text_color};
         font-family: 'Courier New', monospace;
-    }
-    .big-timer {
+    }}
+    .big-timer {{
         font-size: 50px !important;
         font-weight: bold;
-        color: #FFD700;
+        color: {accent_color};
         text-align: center;
-    }
-    .label {
+    }}
+    .label {{
         font-size: 22px !important;
-        color: #FFB347;
+        color: {accent_color};
         text-align: center;
         padding-top: 10px;
         padding-bottom: 4px;
-    }
-    .section {
+    }}
+    .section {{
         padding: 20px 0;
-    }
-    .stButton>button {
+    }}
+    .stButton>button {{
         border-radius: 10px;
         padding: 0.75em 1.5em;
         font-size: 16px;
         font-weight: bold;
-        color: #121212;
-        background-color: #FFD700;
+        color: {bg_color};
+        background-color: {button_color};
         border: none;
         transition: all 0.3s ease-in-out;
-    }
-    .stButton>button:hover {
-        background-color: #FFC300;
+    }}
+    .stButton>button:hover {{
+        background-color: {accent_color};
         transform: scale(1.05);
-    }
+    }}
+    .streak-box {{
+        background-color: {accent_color};
+        color: {bg_color};
+        padding: 10px;
+        border-radius: 10px;
+        text-align: center;
+        font-weight: bold;
+        margin: 10px 0;
+    }}
     </style>
 """, unsafe_allow_html=True)
 
+
 # -----------------------
-# Time Helpers
+# Helper Functions
 # -----------------------
 def get_remaining_today():
     now = datetime.now()
     end = now.replace(hour=23, minute=59, second=59)
     seconds = int((end - now).total_seconds())
     return seconds
+
 
 def get_remaining_month():
     now = datetime.now()
@@ -91,6 +127,47 @@ def get_remaining_month():
     seconds = int((end - now).total_seconds())
     return seconds
 
+
+def format_time(seconds):
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    return f"{hours}h {minutes}m {secs}s"
+
+
+def get_streak():
+    dates = sorted(data["daily_time"].keys())
+    if not dates:
+        return 0
+
+    streak = 0
+    current_date = datetime.now().date()
+
+    for i in range(len(dates)):
+        date_obj = datetime.strptime(dates[-(i + 1)], "%Y-%m-%d").date()
+        if data["daily_time"][dates[-(i + 1)]] > 0:
+            if date_obj == current_date - timedelta(days=i):
+                streak += 1
+            else:
+                break
+        else:
+            break
+    return streak
+
+
+def get_weekly_time():
+    now = datetime.now()
+    week_start = now - timedelta(days=now.weekday())
+    week_time = 0
+
+    for i in range(7):
+        date_str = (week_start + timedelta(days=i)).strftime("%Y-%m-%d")
+        if date_str in data["daily_time"]:
+            week_time += data["daily_time"][date_str]
+
+    return week_time
+
+
 # -----------------------
 # Session State
 # -----------------------
@@ -100,23 +177,86 @@ if "timer_running" not in st.session_state:
     st.session_state.timer_running = False
 if "live_elapsed" not in st.session_state:
     st.session_state.live_elapsed = 0.0
+if "current_category" not in st.session_state:
+    st.session_state.current_category = "Work"
+if "session_note" not in st.session_state:
+    st.session_state.session_note = ""
+if "pomodoro_mode" not in st.session_state:
+    st.session_state.pomodoro_mode = False
+if "pomodoro_work_time" not in st.session_state:
+    st.session_state.pomodoro_work_time = data["settings"]["pomodoro"]["work"] * 60
+if "pomodoro_break_time" not in st.session_state:
+    st.session_state.pomodoro_break_time = data["settings"]["pomodoro"]["break"] * 60
+if "is_break" not in st.session_state:
+    st.session_state.is_break = False
 
 # -----------------------
-# Header Timers
+# Sidebar
 # -----------------------
-col1, col2 = st.columns(2)
+with st.sidebar:
+    st.title("🎯 Controls")
+
+    # Theme selector
+    theme_option = st.selectbox("Theme", ["dark", "light"],
+                                index=0 if data["settings"]["theme"] == "dark" else 1)
+    if theme_option != data["settings"]["theme"]:
+        data["settings"]["theme"] = theme_option
+        save_data(data)
+        st.rerun()
+
+    # Category selector
+    st.session_state.current_category = st.selectbox("Category", data["categories"])
+
+    # Session note
+    st.session_state.session_note = st.text_area("Session Note",
+                                                 value=st.session_state.session_note,
+                                                 height=80)
+
+    # Pomodoro settings
+    st.subheader("🍅 Pomodoro")
+    st.session_state.pomodoro_mode = st.checkbox("Enable Pomodoro",
+                                                 value=st.session_state.pomodoro_mode)
+
+    if st.session_state.pomodoro_mode:
+        work_min = st.slider("Work time (min)", 15, 60, data["settings"]["pomodoro"]["work"])
+        break_min = st.slider("Break time (min)", 5, 30, data["settings"]["pomodoro"]["break"])
+
+        if work_min != data["settings"]["pomodoro"]["work"] or break_min != data["settings"]["pomodoro"]["break"]:
+            data["settings"]["pomodoro"]["work"] = work_min
+            data["settings"]["pomodoro"]["break"] = break_min
+            st.session_state.pomodoro_work_time = work_min * 60
+            st.session_state.pomodoro_break_time = break_min * 60
+            save_data(data)
+
+    # Goals
+    st.subheader("🎯 Goals")
+    daily_goal = st.slider("Daily goal (hours)", 1, 16, data["goals"]["daily"] // 3600)
+    weekly_goal = st.slider("Weekly goal (hours)", 5, 80, data["goals"]["weekly"] // 3600)
+
+    if daily_goal != data["goals"]["daily"] // 3600 or weekly_goal != data["goals"]["weekly"] // 3600:
+        data["goals"]["daily"] = daily_goal * 3600
+        data["goals"]["weekly"] = weekly_goal * 3600
+        save_data(data)
+
+# -----------------------
+# Main Content
+# -----------------------
+# Header with streak
+col1, col2, col3 = st.columns(3)
 
 with col1:
     st.markdown("<div class='label'>📅 Time Remaining This Month</div>", unsafe_allow_html=True)
     sec = get_remaining_month()
-    h, m, s = sec // 3600, (sec % 3600) // 60, sec % 60
-    st.markdown(f"<div class='big-timer'>{h}h {m}m {s}s</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='big-timer'>{format_time(sec)}</div>", unsafe_allow_html=True)
 
 with col2:
     st.markdown("<div class='label'>📆 Time Remaining Today</div>", unsafe_allow_html=True)
     sec = get_remaining_today()
-    h, m, s = sec // 3600, (sec % 3600) // 60, sec % 60
-    st.markdown(f"<div class='big-timer'>{h}h {m}m {s}s</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='big-timer'>{format_time(sec)}</div>", unsafe_allow_html=True)
+
+with col3:
+    streak = get_streak()
+    st.markdown(f"<div class='streak-box'>🔥 {streak} Day Streak</div>", unsafe_allow_html=True)
 
 # -----------------------
 # Focus Timer + Controls
@@ -129,10 +269,48 @@ if st.session_state.timer_running:
     st.session_state.live_elapsed += now - (st.session_state.start_time or now)
     st.session_state.start_time = now
 
-# Combine live + saved for display
-total_sec = int(data[today_str] + st.session_state.live_elapsed)
-hr, mn, sc = total_sec // 3600, (total_sec % 3600) // 60, total_sec % 60
-st.markdown(f"<div class='big-timer'>{hr}h {mn}m {sc}s</div>", unsafe_allow_html=True)
+# Pomodoro logic
+if st.session_state.pomodoro_mode and st.session_state.timer_running:
+    if not st.session_state.is_break:
+        remaining = st.session_state.pomodoro_work_time - st.session_state.live_elapsed
+        if remaining <= 0:
+            st.session_state.is_break = True
+            st.session_state.live_elapsed = 0
+            st.session_state.start_time = time.time()
+            st.success("Work session complete! Take a break!")
+    else:
+        remaining = st.session_state.pomodoro_break_time - st.session_state.live_elapsed
+        if remaining <= 0:
+            st.session_state.is_break = False
+            st.session_state.live_elapsed = 0
+            st.session_state.start_time = time.time()
+            st.success("Break over! Ready for next work session!")
+
+# Display timer
+if st.session_state.pomodoro_mode:
+    if st.session_state.is_break:
+        remaining = st.session_state.pomodoro_break_time - st.session_state.live_elapsed
+        st.markdown(f"<div class='label'>☕ Break Time</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='big-timer'>{format_time(max(0, remaining))}</div>", unsafe_allow_html=True)
+    else:
+        remaining = st.session_state.pomodoro_work_time - st.session_state.live_elapsed
+        st.markdown(f"<div class='label'>🍅 Work Time</div>", unsafe_allow_html=True)
+        st.markdown(f"<div class='big-timer'>{format_time(max(0, remaining))}</div>", unsafe_allow_html=True)
+else:
+    total_sec = int(data["daily_time"][today_str] + st.session_state.live_elapsed)
+    st.markdown(f"<div class='big-timer'>{format_time(total_sec)}</div>", unsafe_allow_html=True)
+
+# Progress bars
+col1, col2 = st.columns(2)
+with col1:
+    daily_progress = (data["daily_time"][today_str] + st.session_state.live_elapsed) / data["goals"]["daily"]
+    st.progress(min(daily_progress, 1.0))
+    st.caption(f"Daily Goal: {format_time(data['goals']['daily'])}")
+
+with col2:
+    weekly_progress = get_weekly_time() / data["goals"]["weekly"]
+    st.progress(min(weekly_progress, 1.0))
+    st.caption(f"Weekly Goal: {format_time(data['goals']['weekly'])}")
 
 # Buttons
 colA, colB, colC = st.columns([2, 2, 2])
@@ -142,15 +320,134 @@ with colB:
     if colX.button("▶️ Start"):
         st.session_state.start_time = time.time()
         st.session_state.timer_running = True
+        st.session_state.live_elapsed = 0
 
     if colY.button("⏹ Stop"):
         st.session_state.timer_running = False
         if st.session_state.live_elapsed > 0:
-            data[today_str] += st.session_state.live_elapsed
+            # Save session
+            session = {
+                "date": today_str,
+                "start_time": datetime.now().isoformat(),
+                "duration": st.session_state.live_elapsed,
+                "category": st.session_state.current_category,
+                "note": st.session_state.session_note,
+                "pomodoro": st.session_state.pomodoro_mode
+            }
+            data["sessions"].append(session)
+
+            # Update daily time
+            if not st.session_state.is_break:  # Only count work time
+                data["daily_time"][today_str] += st.session_state.live_elapsed
+
             save_data(data)
             st.session_state.live_elapsed = 0.0
+            st.session_state.session_note = ""
         st.session_state.start_time = None
+        st.session_state.is_break = False
 
-# Refresh every second
-time.sleep(1)
-st.rerun()
+# -----------------------
+# Analytics Tab
+# -----------------------
+tabs = st.tabs(["📊 Analytics", "📈 Reports", "⚙️ Settings"])
+
+with tabs[0]:
+    if data["sessions"]:
+        # Recent sessions
+        st.subheader("Recent Sessions")
+        recent_sessions = data["sessions"][-10:]  # Last 10 sessions
+        for session in reversed(recent_sessions):
+            with st.expander(f"{session['category']} - {format_time(session['duration'])} ({session['date']})"):
+                st.write(f"**Duration:** {format_time(session['duration'])}")
+                st.write(f"**Category:** {session['category']}")
+                st.write(f"**Note:** {session['note'] or 'No note'}")
+                st.write(f"**Pomodoro:** {'Yes' if session['pomodoro'] else 'No'}")
+
+        # Category breakdown
+        st.subheader("Time by Category")
+        category_time = defaultdict(float)
+        for session in data["sessions"]:
+            category_time[session["category"]] += session["duration"]
+
+        if category_time:
+            fig = px.pie(
+                values=list(category_time.values()),
+                names=list(category_time.keys()),
+                title="Time Distribution by Category"
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+    else:
+        st.info("No sessions recorded yet. Start tracking to see analytics!")
+
+with tabs[1]:
+    if data["daily_time"]:
+        # Daily time chart
+        st.subheader("Daily Time Report")
+        dates = sorted(data["daily_time"].keys())[-30:]  # Last 30 days
+        times = [data["daily_time"][date] / 3600 for date in dates]  # Convert to hours
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(x=dates, y=times, mode='lines+markers', name='Daily Time'))
+        fig.add_hline(y=data["goals"]["daily"] / 3600, line_dash="dash", line_color="red", annotation_text="Daily Goal")
+        fig.update_layout(title="Daily Time Tracking", xaxis_title="Date", yaxis_title="Hours")
+        st.plotly_chart(fig, use_container_width=True)
+
+        # Export data
+        if st.button("📥 Export Data"):
+            df = pd.DataFrame(data["sessions"])
+            csv = df.to_csv(index=False)
+            st.download_button(
+                label="Download CSV",
+                data=csv,
+                file_name=f"time_tracker_data_{datetime.now().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+    else:
+        st.info("No data to display yet. Start tracking to see reports!")
+
+with tabs[2]:
+    st.subheader("Categories")
+    new_category = st.text_input("Add new category")
+    if st.button("Add Category") and new_category:
+        if new_category not in data["categories"]:
+            data["categories"].append(new_category)
+            save_data(data)
+            st.rerun()
+
+    st.write("Current categories:")
+    for i, category in enumerate(data["categories"]):
+        col1, col2 = st.columns([3, 1])
+        col1.write(category)
+        if col2.button("Remove", key=f"remove_{i}") and len(data["categories"]) > 1:
+            data["categories"].remove(category)
+            save_data(data)
+            st.rerun()
+
+# Keyboard shortcuts info
+st.markdown("---")
+st.markdown("**Keyboard Shortcuts:** Press Space to Start/Stop timer")
+
+# Auto-refresh
+if st.session_state.timer_running:
+    time.sleep(1)
+    st.rerun()
+
+# Handle keyboard shortcuts with JavaScript
+st.markdown("""
+<script>
+document.addEventListener('keydown', function(e) {
+    if (e.code === 'Space' && !e.target.matches('input, textarea')) {
+        e.preventDefault();
+        // Find start/stop buttons and click them
+        const buttons = document.querySelectorAll('button');
+        for (let button of buttons) {
+            if (button.textContent.includes('▶️ Start') || button.textContent.includes('⏹ Stop')) {
+                button.click();
+                break;
+            }
+        }
+    }
+});
+</script>
+""", unsafe_allow_html=True)
